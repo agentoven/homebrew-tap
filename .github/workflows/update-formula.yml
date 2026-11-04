@@ -1,0 +1,49 @@
+name: update-formula
+
+# Keeps Formula/agentoven.rb on the newest stable release of agentoven/agentoven. A workflow in the
+# agentoven repository cannot push here without a personal access token, so this repository pulls
+# instead: it reads that release every six hours and commits with its own GITHUB_TOKEN.
+#
+# GitHub turns scheduled workflows off after 60 days without a commit to a public repository. If
+# that ever happens, re-enable it: gh workflow enable update-formula --repo agentoven/homebrew-tap
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Point the formula at the newest stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/agentoven/agentoven/releases/latest --jq .tag_name)
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "latest release tag '$tag' is not a stable version: nothing to do"
+            exit 0
+          fi
+          current=$(sed -n 's|.*refs/tags/\(v[^"]*\)\.tar\.gz.*|\1|p' Formula/agentoven.rb | head -n 1)
+          echo "formula: $current, newest release: $tag"
+          if [ "$current" = "$tag" ]; then
+            exit 0
+          fi
+          # Never move the formula backwards (a back-filled old tag cannot be "latest", but be safe).
+          if [ "$(printf '%s\n%s\n' "$current" "$tag" | sort -V | tail -n 1)" != "$tag" ]; then
+            echo "$tag is older than $current: leaving the formula alone"
+            exit 0
+          fi
+          url="https://github.com/agentoven/agentoven/archive/refs/tags/${tag}.tar.gz"
+          sha=$(curl -fsSL "$url" | sha256sum | cut -d ' ' -f 1)
+          sed -i "s|url \".*\"|url \"${url}\"|; s|sha256 \".*\"|sha256 \"${sha}\"|" Formula/agentoven.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "agentoven ${tag#v}"
+          git push
